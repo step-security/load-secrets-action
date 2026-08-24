@@ -18,12 +18,12 @@ jobs:
     if: ${{ github.event.issue.pull_request }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
       - name: Slash Command Dispatch
-        uses: step-security/slash-command-dispatch@d0336ef847d610a252f1f6a77630c3bb5712d0bf # v5.0.2
+        uses: step-security/slash-command-dispatch@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           reaction-token: ${{ secrets.GITHUB_TOKEN }}

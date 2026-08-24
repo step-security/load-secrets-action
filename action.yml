@@ -1,6 +1,6 @@
 name: Load secrets from 1Password
 description: Make secrets from 1Password Connect available as environment variables in the next steps.
-author: 1Password
+author: "step-security"
 branding:
   icon: lock
   color: blue

@@ -118,15 +118,3 @@ jobs:
 Unlike the Service Account and Connect flows, you don't select secrets with individual `op://` references. Instead, **all variables defined in the configured 1Password environment are loaded** and each one is exported as an environment variable (or set as a step output). Scope your environment to only the variables you want available to the job.
 
 If only some of the three variables are set, or if they're combined with another authentication method, the action fails with a configuration error.
-
-## 💙 Community & Support
-
-- File an [issue](https://github.com/1Password/load-secrets-action/issues) for bugs and feature requests.
-- Join the [Developer Slack workspace](https://developer.1password.com/joinslack).
-- Subscribe to the [Developer Newsletter](https://1password.com/dev-subscribe/).
-
-## 🔐 Security
-
-1Password requests you practice responsible disclosure if you discover a vulnerability.
-
-Please file requests by sending an email to bugbounty@agilebits.com.
