@@ -1,0 +1,586 @@
+name: E2E Tests
+
+on:
+  # For local testing with: act push -W .github/workflows/e2e-tests.yml
+  push:
+    branches-ignore:
+      - "**" # Never runs on GitHub, only locally with act
+
+  # For test.yml to call this workflow
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to checkout"
+        required: true
+        type: string
+    secrets:
+      OP_CONNECT_CREDENTIALS:
+        required: true
+      OP_CONNECT_TOKEN:
+        required: true
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
+      OP_WORKLOAD_ID:
+        required: true
+      OP_ENVIRONMENT_ID:
+        required: true
+      OP_INTEGRATION_KEY:
+        required: true
+      VAULT:
+        description: "1Password vault name or UUID"
+        required: true
+
+jobs:
+  # Full secret-resolution coverage (ubuntu only): all shapes, both delivery paths, both export-env branches. Per-OS resolution is covered by the smoke job below.
+  test-service-account:
+    name: Service Account (ubuntu-latest, ${{ matrix.version }}, export-env=${{ matrix.export-env }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      # Read tests never run more than one combo at a time (chained + serialized here).
+      max-parallel: 1
+      matrix:
+        version: [latest]
+        export-env: [false, true]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Generate .env.tpl
+        shell: bash
+        run: |
+          echo "FILE_SECRET=op://${VAULT}/test-secret/password" > tests/.env.tpl
+          echo "FILE_SECRET_IN_SECTION=op://${VAULT}/test-secret/test-section/password" >> tests/.env.tpl
+          echo "FILE_MULTILINE_SECRET=op://${VAULT}/multiline-secret/notesPlain" >> tests/.env.tpl
+          echo "FILE_WEBSITE=op://${VAULT}/test-secret/website" >> tests/.env.tpl
+          echo "FILE_TEST_SSH_KEY=op://${VAULT}/test-ssh-key/private key" >> tests/.env.tpl
+          echo "FILE_TEST_SSH_KEY_OPENSSH=op://${VAULT}/test-ssh-key/private key?ssh-format=openssh" >> tests/.env.tpl
+
+        env:
+          VAULT: ${{ secrets.VAULT }}
+      - name: Configure Service account
+        uses: ./configure
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Load secrets
+        id: load_secrets
+        uses: ./
+        with:
+          version: ${{ matrix.version }}
+          export-env: ${{ matrix.export-env }}
+        env:
+          SECRET: op://${{ secrets.VAULT }}/test-secret/password
+          SECRET_IN_SECTION: op://${{ secrets.VAULT }}/test-secret/test-section/password
+          MULTILINE_SECRET: op://${{ secrets.VAULT }}/multiline-secret/notesPlain
+          WEBSITE: op://${{ secrets.VAULT }}/test-secret/website
+          TEST_SSH_KEY: op://${{ secrets.VAULT }}/test-ssh-key/private key
+          TEST_SSH_KEY_OPENSSH: "op://${{ secrets.VAULT }}/test-ssh-key/private key?ssh-format=openssh"
+          OP_ENV_FILE: ./tests/.env.tpl
+
+      - name: Assert test secret values [step output]
+        if: ${{ !matrix.export-env }}
+        shell: bash
+        env:
+          ASSERT_WEBSITE: "true"
+          SECRET: ${{ steps.load_secrets.outputs.SECRET }}
+          SECRET_IN_SECTION: ${{ steps.load_secrets.outputs.SECRET_IN_SECTION }}
+          MULTILINE_SECRET: ${{ steps.load_secrets.outputs.MULTILINE_SECRET }}
+          FILE_SECRET: ${{ steps.load_secrets.outputs.FILE_SECRET }}
+          FILE_SECRET_IN_SECTION: ${{ steps.load_secrets.outputs.FILE_SECRET_IN_SECTION }}
+          FILE_MULTILINE_SECRET: ${{ steps.load_secrets.outputs.FILE_MULTILINE_SECRET }}
+          WEBSITE: ${{ steps.load_secrets.outputs.WEBSITE }}
+          FILE_WEBSITE: ${{ steps.load_secrets.outputs.FILE_WEBSITE }}
+          TEST_SSH_KEY: ${{ steps.load_secrets.outputs.TEST_SSH_KEY }}
+          FILE_TEST_SSH_KEY: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY }}
+          TEST_SSH_KEY_OPENSSH: ${{ steps.load_secrets.outputs.TEST_SSH_KEY_OPENSSH }}
+          FILE_TEST_SSH_KEY_OPENSSH: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY_OPENSSH }}
+        run: ./tests/assert-env-set.sh
+
+      - name: Assert SSH key env vars [step output]
+        if: ${{ !matrix.export-env }}
+        shell: bash
+        env:
+          TEST_SSH_KEY: ${{ steps.load_secrets.outputs.TEST_SSH_KEY }}
+          FILE_TEST_SSH_KEY: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY }}
+          TEST_SSH_KEY_OPENSSH: ${{ steps.load_secrets.outputs.TEST_SSH_KEY_OPENSSH }}
+          FILE_TEST_SSH_KEY_OPENSSH: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY_OPENSSH }}
+        run: ./tests/assert-ssh-keys-set.sh
+
+      - name: Assert test secret values [exported env]
+        if: ${{ matrix.export-env }}
+        shell: bash
+        env:
+          ASSERT_WEBSITE: "true"
+        run: ./tests/assert-env-set.sh
+
+      - name: Assert SSH key env vars [exported env]
+        if: ${{ matrix.export-env }}
+        shell: bash
+        run: ./tests/assert-ssh-keys-set.sh
+
+      - name: Remove secrets [exported env]
+        if: ${{ matrix.export-env }}
+        uses: ./
+        with:
+          unset-previous: true
+
+      - name: Assert removed secrets [exported env]
+        if: ${{ matrix.export-env }}
+        shell: bash
+        run: ./tests/assert-env-unset.sh
+
+  # Per-OS smoke: proves the resolution pipeline runs on macOS/Windows (one secret via env var + OP_ENV_FILE); shape coverage stays on the ubuntu job.
+  test-service-account-smoke:
+    name: Service Account smoke (${{ matrix.os }})
+    needs: test-service-account
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Generate .env.tpl
+        shell: bash
+        run: |
+          mkdir -p tests
+          echo "FILE_SECRET=op://${VAULT}/test-secret/password" > tests/.env.tpl
+        env:
+          VAULT: ${{ secrets.VAULT }}
+
+      - name: Configure Service account
+        uses: ./configure
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Load secrets
+        id: load_secrets
+        uses: ./
+        with:
+          version: latest
+          export-env: false
+        env:
+          SECRET: op://${{ secrets.VAULT }}/test-secret/password
+          OP_ENV_FILE: ./tests/.env.tpl
+
+      - name: Assert secret resolved (env var + OP_ENV_FILE)
+        shell: bash
+        env:
+          SMOKE: "true"
+          SECRET: ${{ steps.load_secrets.outputs.SECRET }}
+          FILE_SECRET: ${{ steps.load_secrets.outputs.FILE_SECRET }}
+        run: ./tests/assert-env-set.sh
+
+  test-connect:
+    name: Connect (ubuntu-latest, ${{ matrix.version }})
+    needs: test-service-account-smoke
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        version: [latest]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Generate .env.tpl
+        run: |
+          mkdir -p tests
+          echo "FILE_SECRET=op://${VAULT}/test-secret/password" > tests/.env.tpl
+          echo "FILE_SECRET_IN_SECTION=op://${VAULT}/test-secret/test-section/password" >> tests/.env.tpl
+          echo "FILE_MULTILINE_SECRET=op://${VAULT}/multiline-secret/notesPlain" >> tests/.env.tpl
+          echo "FILE_TEST_SSH_KEY=op://${VAULT}/test-ssh-key/private key" >> tests/.env.tpl
+          echo "FILE_TEST_SSH_KEY_OPENSSH=op://${VAULT}/test-ssh-key/private key?ssh-format=openssh" >> tests/.env.tpl
+
+        env:
+          VAULT: ${{ secrets.VAULT }}
+      - name: Launch 1Password Connect instance
+        env:
+          OP_CONNECT_CREDENTIALS: ${{ secrets.OP_CONNECT_CREDENTIALS }}
+        run: |
+          echo "$OP_CONNECT_CREDENTIALS" > 1password-credentials.json
+          docker compose -f tests/fixtures/docker-compose.yml up -d
+          timeout 60 bash -c 'until curl -sf http://localhost:8080/health >/dev/null 2>&1; do sleep 2; done'
+
+      - name: Configure 1Password Connect
+        uses: ./configure
+        with:
+          connect-host: http://localhost:8080
+          connect-token: ${{ secrets.OP_CONNECT_TOKEN }}
+
+      - name: Load secrets
+        id: load_secrets
+        uses: ./
+        with:
+          version: ${{ matrix.version }}
+          export-env: false
+        env:
+          SECRET: op://${{ secrets.VAULT }}/test-secret/password
+          SECRET_IN_SECTION: op://${{ secrets.VAULT }}/test-secret/test-section/password
+          MULTILINE_SECRET: op://${{ secrets.VAULT }}/multiline-secret/notesPlain
+          TEST_SSH_KEY: op://${{ secrets.VAULT }}/test-ssh-key/private key
+          TEST_SSH_KEY_OPENSSH: "op://${{ secrets.VAULT }}/test-ssh-key/private key?ssh-format=openssh"
+          OP_ENV_FILE: ./tests/.env.tpl
+
+      - name: Assert test secret values [step output]
+        env:
+          ASSERT_WEBSITE: "false"
+          SECRET: ${{ steps.load_secrets.outputs.SECRET }}
+          SECRET_IN_SECTION: ${{ steps.load_secrets.outputs.SECRET_IN_SECTION }}
+          MULTILINE_SECRET: ${{ steps.load_secrets.outputs.MULTILINE_SECRET }}
+          FILE_SECRET: ${{ steps.load_secrets.outputs.FILE_SECRET }}
+          FILE_SECRET_IN_SECTION: ${{ steps.load_secrets.outputs.FILE_SECRET_IN_SECTION }}
+          FILE_MULTILINE_SECRET: ${{ steps.load_secrets.outputs.FILE_MULTILINE_SECRET }}
+          TEST_SSH_KEY: ${{ steps.load_secrets.outputs.TEST_SSH_KEY }}
+          FILE_TEST_SSH_KEY: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY }}
+          TEST_SSH_KEY_OPENSSH: ${{ steps.load_secrets.outputs.TEST_SSH_KEY_OPENSSH }}
+          FILE_TEST_SSH_KEY_OPENSSH: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY_OPENSSH }}
+        run: ./tests/assert-env-set.sh
+
+      - name: Assert SSH key env vars [step output]
+        env:
+          TEST_SSH_KEY: ${{ steps.load_secrets.outputs.TEST_SSH_KEY }}
+          FILE_TEST_SSH_KEY: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY }}
+          TEST_SSH_KEY_OPENSSH: ${{ steps.load_secrets.outputs.TEST_SSH_KEY_OPENSSH }}
+          FILE_TEST_SSH_KEY_OPENSSH: ${{ steps.load_secrets.outputs.FILE_TEST_SSH_KEY_OPENSSH }}
+        run: ./tests/assert-ssh-keys-set.sh
+
+  # Proves an explicit pinned version is honored. Install-only (no op:// refs), so it
+  # reads no secrets and runs in parallel with the other install/fallback jobs.
+  test-install:
+    name: Install pinned CLI version (${{ matrix.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        version: [2.30.0]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Configure Service account
+        uses: ./configure
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      - name: Install 1Password CLI (pinned version)
+        uses: ./
+        with:
+          version: ${{ matrix.version }}
+
+      - name: Assert the pinned version installed
+        run: |
+          expected="${{ matrix.version }}"
+          actual="$(op --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Expected CLI version '$expected' but got '$actual'"
+            exit 1
+          fi
+          echo "Pinned install resolved $actual as expected"
+
+  test-docker-hub-fallback:
+    name: "Docker Hub fallback (${{ matrix.channel }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      max-parallel: 2
+      matrix:
+        include:
+          - channel: latest
+            versionPath: .CLI2.release.version
+          - channel: latest-beta
+            versionPath: .CLI2.beta.version
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Capture expected ${{ matrix.channel }} version from app-updates
+        id: expected
+        run: |
+          version=$(curl -s https://app-updates.agilebits.com/latest | jq -r '${{ matrix.versionPath }}')
+          echo "Expected ${{ matrix.channel }} version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Service account
+        uses: ./configure
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      # Blackhole only app-updates.agilebits.com. The download CDN (cache.agilebits.com)
+      # stays reachable, so version resolution fails over to Docker Hub.
+      - name: Simulate an app-updates.agilebits.com outage
+        run: echo "127.0.0.1 app-updates.agilebits.com" | sudo tee -a /etc/hosts
+
+      - name: Install 1Password CLI (must resolve via the Docker Hub fallback)
+        uses: ./
+        with:
+          version: ${{ matrix.channel }}
+
+      - name: Restore app-updates resolution
+        if: always()
+        run: sudo sed -i '/app-updates.agilebits.com/d' /etc/hosts
+
+      - name: Assert the fallback resolved the same version app-updates would have
+        run: |
+          expected="${{ steps.expected.outputs.version }}"
+          actual="$(op --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Expected CLI version '$expected' but got '$actual'"
+            exit 1
+          fi
+          echo "Docker Hub fallback resolved $actual as expected"
+
+  test-baked-in-fallback:
+    name: "Baked-in fallback (${{ matrix.channel }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      max-parallel: 2
+      matrix:
+        include:
+          - channel: latest
+            fallbackKey: latest
+          - channel: latest-beta
+            fallbackKey: latestBeta
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Read expected baked-in ${{ matrix.channel }} version
+        id: expected
+        run: |
+          version=$(node -e "
+            const src = require('fs').readFileSync('src/op-cli-installer/version/fallback-versions.ts', 'utf8');
+            const m = src.match(/ReleaseChannel\.${{ matrix.fallbackKey }}\]:\s*\"([^\"]+)\"/);
+            if (!m) { console.error('Could not find baked-in version for ${{ matrix.fallbackKey }}'); process.exit(1); }
+            process.stdout.write(m[1]);
+          ")
+          echo "Expected baked-in ${{ matrix.channel }} version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Service account
+        uses: ./configure
+        with:
+          service-account-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+      # Blackhole both version sources. cache.agilebits.com (the binary CDN) stays
+      # reachable, so resolution falls all the way through to the baked-in version
+      # while the download still works.
+      - name: Simulate an app-updates and Docker Hub outage
+        run: |
+          echo "127.0.0.1 app-updates.agilebits.com" | sudo tee -a /etc/hosts
+          echo "127.0.0.1 hub.docker.com" | sudo tee -a /etc/hosts
+
+      - name: Install 1Password CLI (must resolve via the baked-in fallback)
+        uses: ./
+        with:
+          version: ${{ matrix.channel }}
+
+      - name: Restore version-source resolution
+        if: always()
+        run: sudo sed -i '/app-updates.agilebits.com/d;/hub.docker.com/d' /etc/hosts
+
+      - name: Assert the install used the baked-in version
+        run: |
+          expected="${{ steps.expected.outputs.version }}"
+          actual="$(op --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "Expected baked-in CLI version '$expected' but got '$actual'"
+            exit 1
+          fi
+          echo "Baked-in fallback resolved $actual as expected"
+
+  test-workload-identity:
+    name: Workload Identity (ubuntu-latest, export-env=${{ matrix.export-env }})
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        export-env: [true, false]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build actions
+        run: npm run build:all
+
+      - name: Load secrets
+        id: load_secrets
+        uses: ./
+        with:
+          export-env: ${{ matrix.export-env }}
+        env:
+          OP_WORKLOAD_ID: ${{ secrets.OP_WORKLOAD_ID }}
+          OP_ENVIRONMENT_ID: ${{ secrets.OP_ENVIRONMENT_ID }}
+          OP_INTEGRATION_KEY: ${{ secrets.OP_INTEGRATION_KEY }}
+
+      - name: Assert test secret values [step output]
+        if: ${{ !matrix.export-env }}
+        shell: bash
+        env:
+          ANOTHER_TEST: ${{ steps.load_secrets.outputs.ANOTHER_TEST }}
+          SUPER_SECRET: ${{ steps.load_secrets.outputs.SUPER_SECRET }}
+          TEST_SECRET: ${{ steps.load_secrets.outputs.TEST_SECRET }}
+        run: ./tests/assert-workload-identity.sh
+
+      - name: Assert test secret values [exported env]
+        if: ${{ matrix.export-env }}
+        shell: bash
+        run: ./tests/assert-workload-identity.sh
+
+      - name: Remove secrets [exported env]
+        if: ${{ matrix.export-env }}
+        uses: ./
+        with:
+          unset-previous: true
+
+      - name: Assert removed secrets [exported env]
+        if: ${{ matrix.export-env }}
+        shell: bash
+        run: |
+          for var in ANOTHER_TEST SUPER_SECRET TEST_SECRET; do
+            if [ -n "$(printenv "$var")" ]; then
+              echo "Expected secret $var to be unset"
+              exit 1
+            fi
+          done

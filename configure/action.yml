@@ -1,0 +1,13 @@
+name: Configure 1Password Connect and service account
+description: Persist 1Password Connect host, token and service account for use in next steps.
+author: 1Password
+inputs:
+  connect-host:
+    description: Your 1Password Connect instance URL
+  connect-token:
+    description: Token to authenticate to your 1Password Connect instance
+  service-account-token:
+    description: Your 1Password service account token
+runs:
+  using: "node24"
+  main: "dist/index.js"
