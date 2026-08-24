@@ -1,6 +1,6 @@
 name: Configure 1Password Connect and service account
 description: Persist 1Password Connect host, token and service account for use in next steps.
-author: 1Password
+author: step-security
 inputs:
   connect-host:
     description: Your 1Password Connect instance URL
