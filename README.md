@@ -35,7 +35,7 @@ jobs:
   hello-world:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load secret
         id: load_secrets
@@ -58,7 +58,7 @@ jobs:
   hello-world:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Load secret
         uses: step-security/load-secrets-action@v5

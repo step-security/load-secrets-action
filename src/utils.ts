@@ -122,7 +122,7 @@ export const loadSecrets = async (shouldExportEnv: boolean): Promise<void> => {
 	// Load secrets from environment variables using 1Password CLI.
 	// Iterate over them to find 1Password references, extract the secret values,
 	// and make them available in the next steps either as step outputs or as environment variables.
-	const res = await exec.getExecOutput(`sh -c "op env ls"`);
+	const res = await exec.getExecOutput("op", ["env", "ls"]);
 
 	if (res.stdout === "") {
 		return;

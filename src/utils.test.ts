@@ -240,7 +240,7 @@ describe("loadSecrets", () => {
 			name: "1Password GitHub Action",
 			id: "GHA",
 		});
-		expect(exec.getExecOutput).toHaveBeenCalledWith('sh -c "op env ls"');
+		expect(exec.getExecOutput).toHaveBeenCalledWith("op", ["env", "ls"]);
 		expect(core.exportVariable).toHaveBeenCalledWith(
 			"OP_MANAGED_VARIABLES",
 			"MOCK_SECRET",
@@ -251,7 +251,7 @@ describe("loadSecrets", () => {
 		(exec.getExecOutput as jest.Mock).mockReturnValueOnce({ stdout: "" });
 		await loadSecrets(true);
 
-		expect(exec.getExecOutput).toHaveBeenCalledWith('sh -c "op env ls"');
+		expect(exec.getExecOutput).toHaveBeenCalledWith("op", ["env", "ls"]);
 		expect(core.exportVariable).not.toHaveBeenCalled();
 	});
 
