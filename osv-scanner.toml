@@ -1,0 +1,11 @@
+[[IgnoredVulns]]
+id = "GHSA-23c5-xmqv-rm74"
+reason = "minimatch is a transitive dependency of ESLint and Jest (devDependencies only). It is not reachable from any production dependency and is not included in the built dist/ artifact."
+
+[[IgnoredVulns]]
+id = "GHSA-3ppc-4f35-3m26"
+reason = "minimatch is a transitive dependency of ESLint and Jest (devDependencies only). It is not reachable from any production dependency and is not included in the built dist/ artifact."
+
+[[IgnoredVulns]]
+id = "GHSA-7r86-cg39-jmmj"
+reason = "minimatch is a transitive dependency of ESLint and Jest (devDependencies only). It is not reachable from any production dependency and is not included in the built dist/ artifact."
